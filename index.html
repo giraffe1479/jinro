@@ -860,11 +860,13 @@ function startPoll(phase){
       renderLobbyPlayers(room);
       if(room.phase==='prep'){ stopPoll(); enterPrep(room); }
     } else if(phase==='prep'){
+      if(room.phase==='morning'){ stopPoll(); enterMorning(room); return; }
       const allReady=room.players.every(p=>p.ready);
-      if(allReady&&room.phase==='prep'){
-        if(S.isHost){ room.phase='morning'; await saveRoom(room); }
+      if(allReady&&room.phase==='prep'&&S.isHost){
+        room.phase='morning';
+        await saveRoom(room);
         stopPoll();
-        setTimeout(()=>enterMorning(room),300);
+        enterMorning(room);
       }
     } else if(phase==='morning'){
       if(room.phase==='day'){ stopPoll(); enterDay(room); }
