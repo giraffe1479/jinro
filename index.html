@@ -186,17 +186,47 @@ input::placeholder{color:#b4b2a9}
   <button id="prep-confirm" class="btn btn-primary" onclick="confirmRole()" style="display:none">この役職に決定する</button>
   <div id="prep-done" style="display:none">
     <div class="info-box" id="prep-done-role"></div>
-    <div id="prep-seer-panel" style="display:none;margin-top:1rem">
-      <div class="card">
-        <div class="card-title">占い師の能力：誰か1人の役職を確認する</div>
-        <div class="phase-hint">選択した相手の<b>選んだ役職（表のカード）</b>が確認できます。</div>
-        <div id="prep-seer-players"></div>
-        <div id="prep-seer-result" class="info-box" style="display:none;margin-top:0.75rem"></div>
-      </div>
-    </div>
     <div id="prep-waiting" class="loading" style="margin-top:0.5rem">
       他のプレイヤーを待っています<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
     </div>
+  </div>
+</div>
+
+<!-- 朝フェーズ -->
+<div id="screen-morning" class="screen">
+  <div class="phase-badge phase-prep">朝フェーズ</div>
+  <div class="title">情報確認タイム</div>
+  <div class="phase-hint">占い師・人狼だけが情報を確認できます。確認が終わったらホストが昼フェーズへ進めます。</div>
+
+  <!-- 占い師パネル -->
+  <div id="morning-seer-panel" style="display:none" class="card">
+    <div class="card-title">占い師の能力：誰か1人の役職を確認する</div>
+    <div class="phase-hint">選択した相手の<b>選んだ役職（表のカード）</b>が確認できます。</div>
+    <div id="morning-seer-players"></div>
+    <div id="morning-seer-result" class="info-box" style="display:none;margin-top:0.75rem"></div>
+  </div>
+
+  <!-- 人狼パネル -->
+  <div id="morning-wolf-panel" style="display:none" class="card">
+    <div class="card-title">人狼の情報：仲間の人狼</div>
+    <div id="morning-wolf-list"></div>
+  </div>
+
+  <!-- 一般プレイヤー -->
+  <div id="morning-waiting-panel" style="display:none" class="loading">
+    占い師・人狼が情報を確認しています<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
+  </div>
+
+  <div class="card" style="margin-top:0.5rem">
+    <div class="card-title">あなたの役職</div>
+    <div id="morning-myrole"></div>
+  </div>
+
+  <div id="morning-host" style="display:none;margin-top:0.5rem">
+    <button class="btn btn-primary" onclick="goDay()">昼フェーズへ進む</button>
+  </div>
+  <div id="morning-waiting" style="display:none;text-align:center;font-size:14px;color:#888780;padding:0.5rem">
+    ホストが昼フェーズへ進めるのを待っています<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
   </div>
 </div>
 
@@ -284,10 +314,6 @@ input::placeholder{color:#b4b2a9}
       投票しました。他のプレイヤーを待っています<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
     </div>
   </div>
-  <div id="night-votes-display" class="card" style="display:none">
-    <div class="card-title">現在の票数</div>
-    <div id="night-votes-list"></div>
-  </div>
 </div>
 
 <!-- 結果 -->
@@ -306,6 +332,12 @@ input::placeholder{color:#b4b2a9}
     <div id="result-roles"></div>
   </div>
   <button class="btn" style="margin-top:0.5rem" onclick="backToHome()">ホームに戻る</button>
+  <div id="result-rematch" style="display:none">
+    <button class="btn btn-primary" style="margin-top:0.5rem" onclick="rematch()">同じメンバーで再戦する</button>
+  </div>
+  <div id="result-rematch-waiting" style="display:none;text-align:center;font-size:14px;color:#888780;padding:0.5rem;margin-top:0.5rem">
+    ホストが再戦を開始するのを待っています<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
+  </div>
 </div>
 
 </div>
@@ -370,7 +402,7 @@ const BIN_API = 'https://api.jsonbin.io/v3/b';
 // ユーザーが自分のAPI keyを取得してください。
 // 取得先: https://jsonbin.io/ (無料登録)
 // 以下の MY_API_KEY を書き換えてください。
-let MY_API_KEY = '$2a$10$ErUiikaO5NlJxHpJSYU0wu4xWvxRTtKU.ZKpXIgMot/97fRo//Wm6';
+let MY_API_KEY = '$2a$10$XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
 
 // LocalStorage fallback（同一デバイステスト用）
 function lsKey(){ return STORAGE_PREFIX + S.roomCode; }
@@ -555,43 +587,89 @@ async function confirmRole(){
   const me=room.players.find(p=>p.id===S.myId);
   me.role=S.myRole; me.alt=S.myAlt; me.ready=true;
   await saveRoom(room);
-  // UI更新
   document.getElementById('prep-cards').innerHTML='';
   document.getElementById('prep-confirm').style.display='none';
   document.getElementById('prep-done').style.display='block';
   const role=ROLES[S.myRole];
   document.getElementById('prep-done-role').innerHTML=`<b>選択：${role.name}</b>　${role.desc}`;
-  if(S.myRole==='seer'){
-    document.getElementById('prep-seer-panel').style.display='block';
-    renderSeerPanel(room);
+}
+
+// ===== 朝フェーズ =====
+function enterMorning(room){
+  show('morning');
+  S.seerResult=null; S.seerUsed=false;
+  const isSeer=S.myRole==='seer';
+  const isWolf=S.myRole==='wolf';
+  const wolves=room.players.filter(p=>p.role==='wolf');
+  const otherWolves=wolves.filter(p=>p.id!==S.myId);
+
+  // 役職表示
+  const role=ROLES[S.myRole];
+  document.getElementById('morning-myrole').innerHTML=`
+    <div class="role-card ${role.color}" style="margin:0;cursor:default">
+      <div class="role-name">${role.name}</div>
+      <div class="role-desc">${role.desc}</div>
+    </div>`;
+
+  // 占い師パネル
+  document.getElementById('morning-seer-panel').style.display=isSeer?'block':'none';
+  if(isSeer) renderMorningSeerPlayers(room);
+
+  // 人狼パネル（2人以上の時だけ）
+  const showWolf=isWolf&&wolves.length>=2;
+  document.getElementById('morning-wolf-panel').style.display=showWolf?'block':'none';
+  if(showWolf){
+    document.getElementById('morning-wolf-list').innerHTML=
+      otherWolves.length>0
+        ? otherWolves.map(p=>`
+            <div class="player-row">
+              <div class="avatar wolf">${p.name[0]}</div>
+              <span style="font-size:15px">${p.name}</span>
+              <span class="tag tag-wolf" style="margin-left:auto">人狼</span>
+            </div>`).join('')
+        : '<div style="font-size:14px;color:#888780;padding:0.5rem">あなただけが人狼です</div>';
   }
+
+  // 一般プレイヤー
+  document.getElementById('morning-waiting-panel').style.display=(!isSeer&&!showWolf)?'block':'none';
+
+  document.getElementById('morning-host').style.display=S.isHost?'block':'none';
+  document.getElementById('morning-waiting').style.display=S.isHost?'none':'block';
+  startPoll('morning');
 }
 
-function renderSeerPanel(room){
-  const el=document.getElementById('prep-seer-players');
-  el.innerHTML=room.players.filter(p=>p.id!==S.myId).map(p=>`
-    <div class="player-row clickable" id="sp-${p.id}" onclick="seerCheck('${p.id}','${p.name}')">
-      <div class="avatar">${p.name[0]}</div>
-      <span style="font-size:15px">${p.name}</span>
-    </div>`).join('');
+function renderMorningSeerPlayers(room){
+  document.getElementById('morning-seer-players').innerHTML=
+    room.players.filter(p=>p.id!==S.myId).map(p=>`
+      <div class="player-row clickable" id="msp-${p.id}" onclick="morningSeerCheck('${p.id}','${p.name}')">
+        <div class="avatar">${p.name[0]}</div>
+        <span style="font-size:15px">${p.name}</span>
+      </div>`).join('');
 }
 
-async function seerCheck(pid,pname){
+async function morningSeerCheck(pid,pname){
   if(S.seerUsed)return;
   S.seerUsed=true;
   const room=await getRoom();
   if(!room)return;
   const target=room.players.find(p=>p.id===pid);
   if(!target)return;
-  // 相手がまだ役職を選んでいない場合はカードの1枚目を表示（選択済みならrole）
   const chosenRole=target.role?ROLES[target.role]?.name||target.role
                               :(ROLES[target.cards[0]]?.name||target.cards[0]||'不明');
   S.seerResult=`${pname} の選んだ役職：【${chosenRole}】`;
-  const res=document.getElementById('prep-seer-result');
+  const res=document.getElementById('morning-seer-result');
   res.style.display='block';
   res.innerHTML=`<b>${pname}</b> の選んだ役職：<b>${chosenRole}</b>`;
-  document.querySelectorAll('[id^="sp-"]').forEach(el=>el.classList.remove('selected-target'));
-  document.getElementById('sp-'+pid)?.classList.add('selected-target');
+  document.querySelectorAll('[id^="msp-"]').forEach(el=>el.classList.remove('selected-target'));
+  document.getElementById('msp-'+pid)?.classList.add('selected-target');
+}
+
+async function goDay(){
+  const room=await getRoom(); if(!room)return;
+  room.phase='day';
+  await saveRoom(room);
+  stopPoll();
+  enterDay(room);
 }
 
 // ===== 昼フェーズ =====
@@ -784,10 +862,12 @@ function startPoll(phase){
     } else if(phase==='prep'){
       const allReady=room.players.every(p=>p.ready);
       if(allReady&&room.phase==='prep'){
-        if(S.isHost){ room.phase='day'; await saveRoom(room); }
+        if(S.isHost){ room.phase='morning'; await saveRoom(room); }
         stopPoll();
-        setTimeout(()=>enterDay(room),300);
+        setTimeout(()=>enterMorning(room),300);
       }
+    } else if(phase==='morning'){
+      if(room.phase==='day'){ stopPoll(); enterDay(room); }
     } else if(phase==='day'){
       if(room.phase==='evening'){ stopPoll(); enterEvening(room); }
     } else if(phase==='evening'){
@@ -797,24 +877,6 @@ function startPoll(phase){
       const votes=room.players.filter(p=>p.vote);
       const total=room.players.length;
       document.getElementById('night-vote-progress').textContent=`${votes.length}/${total}人投票済み`;
-      if(votes.length>0){
-        const counts={};
-        votes.forEach(p=>counts[p.vote]=(counts[p.vote]||0)+1);
-        document.getElementById('night-votes-display').style.display='block';
-        document.getElementById('night-votes-list').innerHTML=
-          Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([pid,cnt])=>{
-            const pl=room.players.find(p=>p.id===pid);
-            const pct=Math.round(cnt/votes.length*100);
-            return `<div class="player-row">
-              <div class="avatar">${pl?.name[0]||'?'}</div>
-              <span style="font-size:14px;flex:1">${pl?.name||'?'}</span>
-              <span class="vote-count">${cnt}票</span>
-              <div class="vote-bar-wrap" style="width:60px;margin-left:8px">
-                <div class="vote-bar" style="width:${pct}%"></div>
-              </div>
-            </div>`;
-          }).join('');
-      }
       if(votes.length===total){
         stopPoll();
         if(S.isHost) await resolveGame(room);
@@ -822,6 +884,7 @@ function startPoll(phase){
           S.pollInterval=setInterval(async()=>{
             const r2=await getRoom();
             if(r2&&r2.phase==='result'){ stopPoll(); showResult(r2); }
+            if(r2&&r2.phase==='prep'){ stopPoll(); enterPrep(r2); }
           },2000);
         }
       }
@@ -881,6 +944,33 @@ function showResult(room){
       <span class="tag" style="margin-left:4px">裏:${altRole.name}</span>
     </div>`;
   }).join('');
+  // 再戦ボタン
+  document.getElementById('result-rematch').style.display=S.isHost?'block':'none';
+  document.getElementById('result-rematch-waiting').style.display=S.isHost?'none':'block';
+  // 非ホストは再戦開始を待つポーリング
+  if(!S.isHost){
+    S.pollInterval=setInterval(async()=>{
+      const r=await getRoom();
+      if(r&&r.phase==='prep'){ stopPoll(); enterPrep(r); }
+    },2500);
+  }
+}
+
+async function rematch(){
+  const room=await getRoom(); if(!room)return;
+  const n=room.players.length;
+  let pool=[...ROLE_POOL];
+  while(pool.length<n*2) pool.push('citizen');
+  pool=pool.sort(()=>Math.random()-0.5).slice(0,n*2);
+  room.players.forEach((p,i)=>{
+    p.cards=[pool[i*2],pool[i*2+1]];
+    p.role=null; p.alt=null; p.ready=false; p.vote=null;
+  });
+  room.phase='prep';
+  room.winner=null; room.winIcon=null; room.winDesc=null; room.hanged=[];
+  room.eveningDone=null; room.djSwapped=null;
+  await saveRoom(room);
+  enterPrep(room);
 }
 
 function backToHome(){
@@ -894,7 +984,6 @@ function backToHome(){
   showErr('home-error','');
   show('home');
 }
-
 // ===== URLからルームコードを取得（共有リンク対応） =====
 window.addEventListener('load',()=>{
   const hash=location.hash.replace('#','');
