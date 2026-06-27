@@ -121,6 +121,24 @@ input::placeholder{color:#b4b2a9}
 .citizen-side{background:#e1f5ee;color:#0f6e56}
 .wolf-side{background:#fcebeb;color:#a32d2d}
 .ghost-side{background:#f1efe8;color:#5f5e5a}
+.role-config-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #f1efe8}
+.role-config-row:last-child{border-bottom:none}
+.role-chip{padding:3px 10px;border-radius:6px;font-size:13px;font-weight:500;min-width:74px;text-align:center}
+.rc-wolf{background:#fcebeb;color:#a32d2d}
+.rc-citizen{background:#e1f5ee;color:#0f6e56}
+.rc-seer{background:#eeedfe;color:#3c3489}
+.rc-traitor{background:#2c2c2a;color:#d3d1c7}
+.rc-police{background:#e6f1fb;color:#185fa5}
+.rc-dj{background:#fdf0d5;color:#7a4a0a}
+.rc-ghost{background:#f1efe8;color:#5f5e5a}
+.rc-btn{width:30px;height:30px;border-radius:6px;border:1px solid #d3d1c7;background:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all 0.1s;font-weight:300}
+.rc-btn:hover{background:#f5f4f0}
+.rc-btn:disabled{opacity:0.3;cursor:not-allowed}
+.rc-count{font-size:17px;font-weight:600;width:22px;text-align:center}
+.rc-req{font-size:11px;color:#b4b2a9;margin-left:auto}
+.rc-total{font-size:13px;padding:7px 12px;border-radius:8px;text-align:center;margin-bottom:0.75rem;font-weight:500}
+.rc-ok{background:#e1f5ee;color:#0f6e56}
+.rc-ng{background:#fcebeb;color:#a32d2d}
 </style>
 </head>
 <body>
@@ -170,7 +188,12 @@ input::placeholder{color:#b4b2a9}
   </div>
   <div id="lobby-error" class="error"></div>
   <div id="lobby-host-controls" style="display:none">
-    <button class="btn btn-primary" onclick="startGame()">ゲームを開始する（3人以上）</button>
+    <div class="card">
+      <div class="card-title">役職カードの枚数設定</div>
+      <div id="rc-total-bar" class="rc-total rc-ng">合計 0枚 / 必要 0枚</div>
+      <div id="rc-rows"></div>
+    </div>
+    <button class="btn btn-primary" id="lobby-start-btn" onclick="startGame()" disabled>ゲームを開始する（3人以上）</button>
   </div>
   <div id="lobby-waiting" style="display:none;text-align:center;font-size:14px;color:#888780;padding:0.5rem">
     ホストがゲームを開始するのを待っています<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
@@ -504,13 +527,70 @@ async function goJoin(){
 }
 
 // ===== ロビー =====
+// ===== 役職設定 =====
+const ROLE_CONFIG_DEF=[
+  {key:'wolf',    label:'人狼',    cls:'rc-wolf',    min:1},
+  {key:'citizen', label:'市民',    cls:'rc-citizen', min:0},
+  {key:'seer',    label:'占い師',  cls:'rc-seer',    min:1},
+  {key:'traitor', label:'裏切り者',cls:'rc-traitor', min:0},
+  {key:'police',  label:'警察',    cls:'rc-police',  min:0},
+  {key:'dj',      label:'DJ',      cls:'rc-dj',      min:0},
+  {key:'ghost',   label:'おばけ',  cls:'rc-ghost',   min:0},
+];
+
+// ホストのローカル役職カウント
+let roleConfig={wolf:1,citizen:2,seer:1,traitor:0,police:0,dj:0,ghost:0};
+
+function rcRequired(n){ return n*2; }
+function rcTotal(){ return Object.values(roleConfig).reduce((a,b)=>a+b,0); }
+
+function renderRoleConfig(n){
+  const req=rcRequired(n);
+  const tot=rcTotal();
+  const ok=tot===req&&n>=3;
+  const bar=document.getElementById('rc-total-bar');
+  if(bar){
+    bar.textContent=`合計 ${tot}枚 / 必要 ${req}枚（${n}人×2）`;
+    bar.className='rc-total '+(tot===req?'rc-ok':'rc-ng');
+  }
+  const btn=document.getElementById('lobby-start-btn');
+  if(btn) btn.disabled=!ok;
+
+  const el=document.getElementById('rc-rows');
+  if(!el)return;
+  el.innerHTML=ROLE_CONFIG_DEF.map(r=>{
+    const cnt=roleConfig[r.key]||0;
+    const canDec=cnt>r.min;
+    const canInc=tot<req+5; // 増やせる上限余裕
+    return `<div class="role-config-row">
+      <span class="role-chip ${r.cls}">${r.label}</span>
+      <button class="rc-btn" onclick="rcChange('${r.key}',-1)" ${canDec?'':'disabled'}>−</button>
+      <span class="rc-count">${cnt}</span>
+      <button class="rc-btn" onclick="rcChange('${r.key}',1)">＋</button>
+      ${r.min>0?'<span class="rc-req">必須</span>':''}
+    </div>`;
+  }).join('');
+}
+
+function rcChange(key,delta){
+  const n=parseInt(document.getElementById('lobby-count').textContent)||0;
+  const req=rcRequired(n);
+  const r=ROLE_CONFIG_DEF.find(x=>x.key===key);
+  const next=(roleConfig[key]||0)+delta;
+  if(next<(r.min||0))return;
+  if(delta>0&&rcTotal()>=req)return;
+  roleConfig[key]=next;
+  renderRoleConfig(n);
+}
+
 function showLobby(room){
   show('lobby');
   document.getElementById('lobby-code').textContent=S.roomCode;
-  document.getElementById('lobby-subtitle').textContent=S.isHost?'あなたはホストです。全員が参加したらゲームを開始してください。':'ホストがゲームを開始するのを待っています。';
+  document.getElementById('lobby-subtitle').textContent=S.isHost?'あなたはホストです。役職を設定してゲームを開始してください。':'ホストがゲームを開始するのを待っています。';
   document.getElementById('lobby-host-controls').style.display=S.isHost?'block':'none';
   document.getElementById('lobby-waiting').style.display=S.isHost?'none':'block';
   renderLobbyPlayers(room);
+  if(S.isHost) renderRoleConfig(room.players.length);
 }
 
 function renderLobbyPlayers(room){
@@ -522,23 +602,28 @@ function renderLobbyPlayers(room){
       ${p.id===room.host?'<span class="tag tag-accent" style="margin-left:auto">ホスト</span>':''}
       ${p.id===S.myId&&p.id!==room.host?'<span class="tag" style="margin-left:auto">あなた</span>':''}
     </div>`).join('');
+  if(S.isHost) renderRoleConfig(room.players.length);
 }
 
 async function startGame(){
   const room=await getRoom();
   if(!room)return;
-  if(room.players.length<3){ showErr('lobby-error','3人以上必要です'); return; }
-  showErr('lobby-error','');
-  // 役職カードを配る
   const n=room.players.length;
-  let pool=[...ROLE_POOL];
-  while(pool.length<n*2) pool.push('citizen');
-  pool=pool.sort(()=>Math.random()-0.5).slice(0,n*2);
+  if(n<3){ showErr('lobby-error','3人以上必要です'); return; }
+  const req=rcRequired(n);
+  const tot=rcTotal();
+  if(tot!==req){ showErr('lobby-error',`役職カードの合計が${req}枚になるよう設定してください（現在${tot}枚）`); return; }
+  showErr('lobby-error','');
+  // 設定通りにカードプールを作成
+  let pool=[];
+  ROLE_CONFIG_DEF.forEach(r=>{ for(let i=0;i<(roleConfig[r.key]||0);i++) pool.push(r.key); });
+  pool=pool.sort(()=>Math.random()-0.5);
   room.players.forEach((p,i)=>{
     p.cards=[pool[i*2],pool[i*2+1]];
     p.role=null; p.alt=null; p.ready=false; p.vote=null;
   });
   room.phase='prep';
+  room.roleConfig={...roleConfig};
   await saveRoom(room);
   stopPoll();
   enterPrep(room);
@@ -857,7 +942,7 @@ function startPoll(phase){
     const room=await getRoom();
     if(!room)return;
     if(phase==='lobby'){
-      renderLobbyPlayers(room);
+      renderLobbyPlayers(room); // renderLobbyPlayersの中でrenderRoleConfigも呼ばれる
       if(room.phase==='prep'){ stopPoll(); enterPrep(room); }
     } else if(phase==='prep'){
       if(room.phase==='morning'){ stopPoll(); enterMorning(room); return; }
@@ -961,7 +1046,11 @@ function showResult(room){
 async function rematch(){
   const room=await getRoom(); if(!room)return;
   const n=room.players.length;
-  let pool=[...ROLE_POOL];
+  // 前回の役職設定を引き継ぐ
+  const cfg=room.roleConfig||{wolf:1,citizen:n*2-2,seer:1};
+  let pool=[];
+  ROLE_CONFIG_DEF.forEach(r=>{ for(let i=0;i<(cfg[r.key]||0);i++) pool.push(r.key); });
+  // 万一合計が合わない場合は市民で補完
   while(pool.length<n*2) pool.push('citizen');
   pool=pool.sort(()=>Math.random()-0.5).slice(0,n*2);
   room.players.forEach((p,i)=>{
