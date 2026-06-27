@@ -139,6 +139,25 @@ input::placeholder{color:#b4b2a9}
 .rc-total{font-size:13px;padding:7px 12px;border-radius:8px;text-align:center;margin-bottom:0.75rem;font-weight:500}
 .rc-ok{background:#e1f5ee;color:#0f6e56}
 .rc-ng{background:#fcebeb;color:#a32d2d}
+/* ===== Playing Cards ===== */
+.pcard{display:inline-flex;flex-direction:column;align-items:center;width:86px;min-height:112px;border-radius:10px;border:2px solid transparent;padding:7px 5px;flex-shrink:0;text-align:center;gap:4px}
+.pcard-badge{font-size:10px;font-weight:600;letter-spacing:0.03em;padding:2px 6px;border-radius:20px;background:rgba(0,0,0,0.07);width:100%;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pcard-name{font-size:16px;font-weight:700;flex:1;display:flex;align-items:center;justify-content:center;line-height:1.2}
+.pcard-side{font-size:10px;opacity:0.6;width:100%}
+.pcard-chosen{border-color:#1a1a18;box-shadow:0 2px 8px rgba(0,0,0,0.1)}
+.pcard-unchosen{opacity:0.42;border:2px dashed #b4b2a9 !important}
+.pcard-info{border:1.5px solid #c8c6be}
+.pc-wolf{background:#fcebeb}.pc-citizen{background:#e1f5ee}.pc-seer{background:#eeedfe}
+.pc-traitor{background:#2c2c2a;color:#d3d1c7}.pc-police{background:#e6f1fb}
+.pc-dj{background:#fdf0d5}.pc-ghost{background:#f1efe8}
+.pc-traitor .pcard-badge{background:rgba(255,255,255,0.12);color:#d3d1c7}
+.pc-traitor .pcard-side{color:#888780;opacity:1}
+.cards-row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;margin:4px 0 2px}
+.info-entry{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f1efe8;flex-wrap:wrap}
+.info-entry:last-child{border-bottom:none}
+.info-badge{font-size:11px;font-weight:600;color:#fff;padding:2px 9px;border-radius:20px;white-space:nowrap;flex-shrink:0}
+.ib-seer{background:#7f77dd}.ib-police{background:#378add}.ib-wolf{background:#e24b4a}
+.info-name{font-size:14px;font-weight:500;flex:1;min-width:40px}
 </style>
 </head>
 <body>
@@ -254,12 +273,12 @@ input::placeholder{color:#b4b2a9}
   <div class="title">議論タイム</div>
   <div class="phase-hint">全員で話し合い、誰が人狼かを議論しましょう。</div>
   <div class="card">
-    <div class="card-title">あなたの役職</div>
+    <div class="card-title">あなたのカード</div>
     <div id="day-myrole"></div>
   </div>
   <div id="day-seer-info" class="card" style="display:none">
-    <div class="card-title">占い師の情報</div>
-    <div id="day-seer-text" class="info-box"></div>
+    <div class="card-title">あなたが集めた情報</div>
+    <div id="day-seer-text"></div>
   </div>
   <div class="card">
     <div class="card-title">参加者</div>
@@ -298,14 +317,14 @@ input::placeholder{color:#b4b2a9}
 
   <!-- 現在の役職 -->
   <div class="card">
-    <div class="card-title">あなたの現在の役職</div>
+    <div class="card-title">あなたのカード</div>
     <div id="evening-myrole"></div>
   </div>
 
   <!-- 警察結果表示 -->
   <div id="evening-police-info" class="card" style="display:none">
-    <div class="card-title">警察の確認結果</div>
-    <div id="evening-police-info-text" class="info-box"></div>
+    <div class="card-title">あなたが集めた情報</div>
+    <div id="evening-police-info-text"></div>
   </div>
 
   <div id="evening-auto-waiting" style="display:none;text-align:center;font-size:13px;color:#888780;padding:0.5rem;margin-top:0.5rem">
@@ -319,8 +338,12 @@ input::placeholder{color:#b4b2a9}
   <div class="title">最終議論・投票</div>
   <div class="phase-hint">最後の議論の後、吊りたいプレイヤーに投票してください。最多票の人が吊られます（同数の場合は全員）。</div>
   <div class="card">
-    <div class="card-title">あなたの役職</div>
+    <div class="card-title">あなたのカード</div>
     <div id="night-myrole"></div>
+  </div>
+  <div id="night-info-card" class="card" style="display:none">
+    <div class="card-title">あなたが集めた情報</div>
+    <div id="night-info-content"></div>
   </div>
   <div class="card">
     <div class="card-title">投票 <span id="night-vote-progress" style="font-weight:400;color:#888780"></span></div>
@@ -369,6 +392,35 @@ const ROLES = {
   ghost:   { name:'おばけ', desc:'自分が吊られれば勝利！',                 side:'ghost',   color:'role-ghost'    }
 };
 const ROLE_POOL = ['wolf','citizen','citizen','seer','traitor','police','dj','ghost'];
+
+// ===== カード表示ヘルパー =====
+const ROLE_SIDE={wolf:'人狼サイド',traitor:'人狼サイド',citizen:'市民サイド',seer:'市民サイド',police:'市民サイド',dj:'市民サイド',ghost:'個人勝利'};
+
+function makeRoleCard(roleKey,badge,style){
+  if(!roleKey)return'';
+  const r=ROLES[roleKey]||{name:roleKey};
+  const sc=style==='chosen'?'pcard-chosen':style==='unchosen'?'pcard-unchosen':'pcard-info';
+  const side=ROLE_SIDE[roleKey]||'';
+  return`<div class="pcard pc-${roleKey} ${sc}"><div class="pcard-badge">${badge}</div><div class="pcard-name">${r.name}</div><div class="pcard-side">${side}</div></div>`;
+}
+
+function renderMyCardsHTML(chosenKey,unchosenKey){
+  return`<div class="cards-row">${makeRoleCard(chosenKey,'選択中','chosen')}${makeRoleCard(unchosenKey,'未選択','unchosen')}</div>`;
+}
+
+function renderInfoSectionHTML(){
+  let rows='';
+  if(S.seerTarget){
+    rows+=`<div class="info-entry"><span class="info-badge ib-seer">占い師</span><span class="info-name">${S.seerTarget.name}</span>${makeRoleCard(S.seerTarget.roleKey,'選んだ役職','info')}</div>`;
+  }
+  if(S.policeTarget){
+    rows+=`<div class="info-entry"><span class="info-badge ib-police">警察</span><span class="info-name">${S.policeTarget.name}</span>${makeRoleCard(S.policeTarget.roleKey,'未選択役職','info')}</div>`;
+  }
+  if(S.wolfCompanions&&S.wolfCompanions.length>0){
+    rows+=`<div class="info-entry"><span class="info-badge ib-wolf">人狼仲間</span><div class="cards-row" style="flex:1;margin:0">${S.wolfCompanions.map(w=>makeRoleCard('wolf',w.name,'info')).join('')}</div></div>`;
+  }
+  return rows;
+}
 const STORAGE_PREFIX = 'jinrodocchi_v1_room_';
 
 // ===== 状態 =====
@@ -376,7 +428,8 @@ let S = {
   myName:'', myId:'', roomCode:'', isHost:false,
   myRole:'', myAlt:'', myCards:[],
   seerResult:null, policeResult:null, djDone:false,
-  myVote:'', pollInterval:null, seerUsed:false
+  myVote:'', pollInterval:null, seerUsed:false,
+  seerTarget:null, policeTarget:null, wolfCompanions:[]
 };
 
 // ===== ユーティリティ =====
@@ -612,7 +665,7 @@ async function startGame(){
   pool=pool.sort(()=>Math.random()-0.5);
   room.players.forEach((p,i)=>{
     p.cards=[pool[i*2],pool[i*2+1]];
-    p.role=null; p.alt=null; p.originalAlt=null; p.ready=false; p.vote=null;
+    p.role=null; p.originalRole=null; p.alt=null; p.originalAlt=null; p.ready=false; p.vote=null;
   });
   room.phase='prep';
   room.roleConfig={...roleConfig};
@@ -662,13 +715,14 @@ async function confirmRole(){
   const room=await getRoom();
   if(!room)return;
   const me=room.players.find(p=>p.id===S.myId);
-  me.role=S.myRole; me.alt=S.myAlt; me.originalAlt=S.myAlt; me.ready=true;
+  me.role=S.myRole; me.originalRole=S.myRole; me.alt=S.myAlt; me.originalAlt=S.myAlt; me.ready=true;
   await saveRoom(room);
   document.getElementById('prep-cards').innerHTML='';
   document.getElementById('prep-confirm').style.display='none';
   document.getElementById('prep-done').style.display='block';
-  const role=ROLES[S.myRole];
-  document.getElementById('prep-done-role').innerHTML=`<b>選択：${role.name}</b>　${role.desc}`;
+  document.getElementById('prep-done-role').innerHTML=
+    renderMyCardsHTML(S.myRole,S.myAlt)+
+    `<div style="font-size:13px;color:#888780;margin-top:0.5rem">${ROLES[S.myRole]?.desc||''}</div>`;
 }
 
 // ===== 朝フェーズ =====
@@ -695,14 +749,10 @@ function enterMorning(room){
   // 人狼パネル（人狼なら常に表示）
   document.getElementById('morning-wolf-panel').style.display=isWolf?'block':'none';
   if(isWolf){
+    S.wolfCompanions=otherWolves.map(p=>({name:p.name}));
     document.getElementById('morning-wolf-list').innerHTML=
       otherWolves.length>0
-        ? otherWolves.map(p=>`
-            <div class="player-row">
-              <div class="avatar wolf">${p.name[0]}</div>
-              <span style="font-size:15px">${p.name}</span>
-              <span class="tag tag-wolf" style="margin-left:auto">人狼</span>
-            </div>`).join('')
+        ? `<div class="cards-row">${otherWolves.map(p=>makeRoleCard('wolf',p.name,'info')).join('')}</div>`
         : '<div style="font-size:14px;color:#888780;padding:0.5rem 0">あなただけが人狼です</div>';
     document.getElementById('morning-wolf-confirm-btn').style.display='block';
     document.getElementById('morning-wolf-confirmed').style.display='none';
@@ -710,6 +760,9 @@ function enterMorning(room){
 
   // 一般プレイヤー
   document.getElementById('morning-waiting-panel').style.display=(!isSeer&&!isWolf)?'block':'none';
+
+  // 自分のカード表示
+  document.getElementById('morning-myrole').innerHTML=renderMyCardsHTML(S.myRole,S.myAlt);
 
   startPoll('morning');
 }
@@ -730,12 +783,17 @@ async function morningSeerCheck(pid,pname){
   if(!room)return;
   const target=room.players.find(p=>p.id===pid);
   if(!target)return;
-  const chosenRole=target.role?ROLES[target.role]?.name||target.role
-                              :(ROLES[target.cards[0]]?.name||target.cards[0]||'不明');
-  S.seerResult=`${pname} の選んだ役職：【${chosenRole}】`;
+  const chosenRoleKey=target.role||(target.cards&&target.cards[0])||null;
+  const chosenRoleName=ROLES[chosenRoleKey]?.name||chosenRoleKey||'不明';
+  S.seerTarget={name:pname, roleKey:chosenRoleKey};
+  S.seerResult=`${pname} の選んだ役職：【${chosenRoleName}】`;
   const res=document.getElementById('morning-seer-result');
   res.style.display='block';
-  res.innerHTML=`<b>${pname}</b> の選んだ役職：<b>${chosenRole}</b>`;
+  res.innerHTML=`<div class="info-entry" style="border:none;padding:0">
+    <span class="info-badge ib-seer">占い師</span>
+    <span class="info-name">${pname}</span>
+    ${makeRoleCard(chosenRoleKey,'選んだ役職','info')}
+  </div>`;
   document.querySelectorAll('[id^="msp-"]').forEach(el=>el.classList.remove('selected-target'));
   document.getElementById('msp-'+pid)?.classList.add('selected-target');
   // 占い師完了をroomに記録
@@ -764,16 +822,10 @@ async function goDay(){
 // ===== 昼フェーズ =====
 function enterDay(room){
   show('day');
-  const role=ROLES[S.myRole];
-  document.getElementById('day-myrole').innerHTML=`
-    <div class="role-card ${role.color}" style="margin:0;cursor:default">
-      <div class="role-name">${role.name}</div>
-      <div class="role-desc">${role.desc}</div>
-    </div>`;
-  if(S.seerResult){
-    document.getElementById('day-seer-info').style.display='block';
-    document.getElementById('day-seer-text').innerHTML=S.seerResult;
-  }
+  document.getElementById('day-myrole').innerHTML=renderMyCardsHTML(S.myRole,S.myAlt);
+  const infoHtml=renderInfoSectionHTML();
+  document.getElementById('day-seer-info').style.display=infoHtml?'block':'none';
+  if(infoHtml) document.getElementById('day-seer-text').innerHTML=infoHtml;
   document.getElementById('day-players').innerHTML=room.players.map(p=>`
     <div class="player-row">
       <div class="avatar">${p.name[0]}</div>
@@ -817,11 +869,7 @@ function enterEvening(room){
 }
 
 function renderEveningRole(){
-  const role=ROLES[S.myRole];
-  document.getElementById('evening-myrole').innerHTML=`
-    <div class="role-card ${role.color}" style="margin:0;cursor:default">
-      <div class="role-name">${role.name}</div>
-    </div>`;
+  document.getElementById('evening-myrole').innerHTML=renderMyCardsHTML(S.myRole,S.myAlt);
 }
 
 function renderPolicePanel(room){
@@ -839,12 +887,19 @@ async function policeCheck(pid,pname){
   const target=room.players.find(p=>p.id===pid);
   if(!target)return;
   // originalAlt = 準備フェーズで選ばなかった役職（DJの交換に影響されない）
-  const altRole=ROLES[target.originalAlt]?.name||target.originalAlt||'不明';
+  const altRoleKey=target.originalAlt||null;
+  const altRole=ROLES[altRoleKey]?.name||altRoleKey||'不明';
+  S.policeTarget={name:pname, roleKey:altRoleKey};
   S.policeResult=`${pname} の選ばなかった役職：${altRole}`;
+  const policeCardHtml=`<div class="info-entry" style="border:none;padding:0">
+    <span class="info-badge ib-police">警察</span>
+    <span class="info-name">${pname}</span>
+    ${makeRoleCard(altRoleKey,'未選択役職','info')}
+  </div>`;
   document.getElementById('evening-police-result').style.display='block';
-  document.getElementById('evening-police-result').innerHTML=`<b>${pname}</b> の選ばなかった役職：<b>${altRole}</b>`;
+  document.getElementById('evening-police-result').innerHTML=policeCardHtml;
   document.getElementById('evening-police-info').style.display='block';
-  document.getElementById('evening-police-info-text').innerHTML=S.policeResult;
+  document.getElementById('evening-police-info-text').innerHTML=renderInfoSectionHTML();
   document.querySelectorAll('[id^="pp-"]').forEach(el=>el.classList.remove('selected-target'));
   document.getElementById('pp-'+pid)?.classList.add('selected-target');
   room.eveningDone.police=true;
@@ -904,15 +959,19 @@ async function goNight(){
 async function enterNight(room){
   const r=await getRoom()||room;
   const me=r.players.find(p=>p.id===S.myId);
-  // DJの交換はDJ自身の役職を変えないため、S.myRoleはそのまま
-  if(me&&me.role&&S.myRole!=='dj') S.myRole=me.role;
+  // 夜フェーズの表示は準備フェーズで自分が選んだ役職（originalRole）を使う
+  // DJに交換されても本人には知らせない
+  const displayChosenKey=me?.originalRole||S.myRole;
+  const displayUnchosenKey=me?.originalAlt||S.myAlt;
   show('night');
   S.myVote='';
-  const role=ROLES[S.myRole];
-  document.getElementById('night-myrole').innerHTML=`
-    <div class="role-card ${role.color}" style="margin:0;cursor:default">
-      <div class="role-name">${role.name}</div>
-    </div>`;
+  document.getElementById('night-myrole').innerHTML=renderMyCardsHTML(displayChosenKey,displayUnchosenKey);
+  const infoHtml=renderInfoSectionHTML();
+  const nightInfoCard=document.getElementById('night-info-card');
+  if(nightInfoCard){
+    nightInfoCard.style.display=infoHtml?'block':'none';
+    if(infoHtml) document.getElementById('night-info-content').innerHTML=infoHtml;
+  }
   document.getElementById('night-players').innerHTML=
     r.players.filter(p=>p.id!==S.myId).map(p=>`
       <button class="btn" id="vbtn-${p.id}" onclick="castVote('${p.id}','${p.name}')">
@@ -1083,7 +1142,7 @@ async function rematch(){
   pool=pool.sort(()=>Math.random()-0.5).slice(0,n*2);
   room.players.forEach((p,i)=>{
     p.cards=[pool[i*2],pool[i*2+1]];
-    p.role=null; p.alt=null; p.originalAlt=null; p.ready=false; p.vote=null;
+    p.role=null; p.originalRole=null; p.alt=null; p.originalAlt=null; p.ready=false; p.vote=null;
   });
   room.phase='prep';
   room.morningConfirmed={};
@@ -1097,7 +1156,8 @@ function backToHome(){
   stopPoll();
   binId=null;
   S={myName:'',myId:'',roomCode:'',isHost:false,myRole:'',myAlt:'',myCards:[],
-     seerResult:null,policeResult:null,djDone:false,myVote:'',pollInterval:null,seerUsed:false};
+     seerResult:null,policeResult:null,djDone:false,myVote:'',pollInterval:null,seerUsed:false,
+     seerTarget:null,policeTarget:null,wolfCompanions:[]};
   selCardIdx=null;
   document.getElementById('home-name').value='';
   document.getElementById('home-room').value='';
