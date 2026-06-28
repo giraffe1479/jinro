@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mqtt/dist/mqtt.min.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>人狼ドッチ</title>
 <style>
@@ -572,7 +572,12 @@ function copyCode(){
 
 // ===== ストレージ（MQTT - APIキー不要・無料・クロスデバイス対応） =====
 // HiveMQ公開MQTTブローカー使用（設定不要・クロスデバイス対応）
-const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
+// MQTT接続先ブローカー（複数用意して順番に試す）
+const MQTT_BROKERS = [
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://broker.hivemq.com:8884/mqtt',
+  'wss://test.mosquitto.org:8081'
+];
 let mqttClient = null;
 let cachedRoom = null;
 let pollHandler = null;
@@ -583,31 +588,51 @@ function lsKey(){ return STORAGE_PREFIX + S.roomCode; }
 function lsSave(room){ try{ localStorage.setItem(lsKey(), JSON.stringify(room)); }catch(e){} }
 function lsLoad(){ try{ const v=localStorage.getItem(lsKey()); return v?JSON.parse(v):null; }catch(e){return null} }
 
-function mqttConnect(){
+function tryBroker(brokerUrl){
   return new Promise((resolve,reject)=>{
-    if(mqttClient){ mqttClient.end(true); mqttClient=null; }
-    const client=mqtt.connect(MQTT_BROKER,{
+    const client=mqtt.connect(brokerUrl,{
       clientId:'jinro_'+genId(),
       keepalive:30,
-      reconnectPeriod:3000,
-      connectTimeout:10000
+      reconnectPeriod:0,      // 自動再接続なし（手動でブローカーを切り替える）
+      connectTimeout:7000
     });
     let resolved=false;
     client.on('connect',()=>{
       client.subscribe(mqttTopic(),{qos:1},()=>{
-        if(!resolved){ resolved=true; mqttClient=client; resolve(true); }
+        if(!resolved){ resolved=true; resolve(client); }
       });
     });
-    client.on('message',(topic,msg)=>{
-      try{
-        const room=JSON.parse(msg.toString());
-        cachedRoom=room;
-        if(pollHandler) pollHandler(room);
-      }catch(e){}
-    });
-    client.on('error',(err)=>{ if(!resolved){ resolved=true; reject(err); } });
-    setTimeout(()=>{ if(!resolved){ resolved=true; reject(new Error('timeout')); } },10000);
+    client.on('error',(err)=>{ if(!resolved){ resolved=true; client.end(true); reject(err); } });
+    setTimeout(()=>{
+      if(!resolved){ resolved=true; client.end(true); reject(new Error('timeout:'+brokerUrl)); }
+    },7000);
   });
+}
+
+async function mqttConnect(){
+  if(typeof mqtt==='undefined'){
+    throw new Error('MQTTライブラリが読み込めませんでした。ページを再読み込みしてください。');
+  }
+  if(mqttClient){ mqttClient.end(true); mqttClient=null; }
+  let lastErr=null;
+  for(const broker of MQTT_BROKERS){
+    try{
+      const client=await tryBroker(broker);
+      // 接続成功したブローカーを使用
+      client.options.reconnectPeriod=3000; // 接続後は自動再接続ON
+      mqttClient=client;
+      mqttClient.on('message',(topic,msg)=>{
+        try{
+          const room=JSON.parse(msg.toString());
+          cachedRoom=room;
+          if(pollHandler) pollHandler(room);
+        }catch(e){}
+      });
+      console.log('MQTT connected:', broker);
+      return true;
+    }catch(e){ lastErr=e; console.warn('Broker failed:', broker, e.message); }
+  }
+  throw lastErr||new Error('全てのブローカーへの接続に失敗しました');
 }
 
 function mqttDisconnect(){
@@ -635,7 +660,12 @@ async function goCreate(){
   showErr('home-error','接続中...');
   S.myName=name; S.myId=genId(); S.roomCode=genCode(); S.isHost=true;
   try{ await mqttConnect(); }
-  catch(e){ showErr('home-error','接続エラー。ネットワークを確認してください。'); return; }
+  catch(e){
+    showErr('home-error', typeof mqtt==='undefined'
+      ? 'ライブラリ読み込みエラー。ページを再読み込みしてください。'
+      : '接続エラー: '+e.message+' しばらく待ってから再試行してください。');
+    return;
+  }
   const room={code:S.roomCode,host:S.myId,phase:'lobby',
     players:[{id:S.myId,name,ready:false,vote:null,cards:[],role:null,alt:null,originalRole:null,originalAlt:null}]};
   await saveRoom(room);
@@ -652,7 +682,12 @@ async function goJoin(){
   showErr('home-error','接続中...');
   S.myName=name; S.myId=genId(); S.roomCode=code; S.isHost=false;
   try{ await mqttConnect(); }
-  catch(e){ showErr('home-error','接続エラー。ネットワークを確認してください。'); return; }
+  catch(e){
+    showErr('home-error', typeof mqtt==='undefined'
+      ? 'ライブラリ読み込みエラー。ページを再読み込みしてください。'
+      : '接続エラー: '+e.message+' しばらく待ってから再試行してください。');
+    return;
+  }
   // retainedメッセージの受信を少し待つ
   await new Promise(r=>setTimeout(r,2000));
   const room=await getRoom();
