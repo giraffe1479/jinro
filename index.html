@@ -2,6 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>人狼ドッチ</title>
 <style>
@@ -193,7 +194,7 @@ input::placeholder{color:#b4b2a9}
     <div id="home-error" class="error"></div>
     <button class="btn btn-primary" onclick="goCreate()">新しいゲームを作る（ホスト）</button>
     <div class="divider">または</div>
-    <input id="home-room" placeholder="ルームID（ホストから受け取る）" style="font-family:monospace;font-size:13px"/>
+    <input id="home-room" placeholder="ルームコード（例: ABC12）" maxlength="10" style="text-transform:uppercase;font-family:monospace;letter-spacing:0.1em"/>
     <button class="btn" onclick="goJoin()">ルームに参加する</button>
   </div>
   <div class="card">
@@ -560,104 +561,107 @@ function showErr(id,msg){
 function copyCode(){
   const url=location.href.split('#')[0]+'#'+S.roomCode;
   if(navigator.clipboard){
-    navigator.clipboard.writeText(url).then(()=>{}).catch(()=>window.prompt('URLをコピー:',url));
+    navigator.clipboard.writeText(url).then(()=>{}).catch(()=>window.prompt('リンクをコピー:',url));
   } else {
-    window.prompt('URLをコピー:',url);
+    window.prompt('リンクをコピー:',url);
   }
   const btn=event.currentTarget||event.target;
   btn.textContent='コピーしました！';
   setTimeout(()=>btn.textContent='招待URLをコピー',2000);
 }
 
-// ===== ストレージ（JSONBlob - APIキー不要・無料・クロスデバイス対応） =====
-const BLOB_API = 'https://jsonblob.com/api/jsonBlob';
+// ===== ストレージ（MQTT - APIキー不要・無料・クロスデバイス対応） =====
+// HiveMQ公開MQTTブローカー使用（設定不要・クロスデバイス対応）
+const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
+let mqttClient = null;
+let cachedRoom = null;
+let pollHandler = null;
 
-// ルームIDがそのままBlobのID（数字列）
-let blobId = null;
+function mqttTopic(){ return 'jinrodocchi/v3/'+S.roomCode; }
 
-function lsKey(){ return STORAGE_PREFIX + (blobId||S.roomCode); }
+function lsKey(){ return STORAGE_PREFIX + S.roomCode; }
 function lsSave(room){ try{ localStorage.setItem(lsKey(), JSON.stringify(room)); }catch(e){} }
 function lsLoad(){ try{ const v=localStorage.getItem(lsKey()); return v?JSON.parse(v):null; }catch(e){return null} }
 
-async function saveRoom(room){
-  lsSave(room);
-  if(!blobId) return;
-  try{
-    await fetch(`${BLOB_API}/${blobId}`,{
-      method:'PUT',
-      headers:{'Content-Type':'application/json','Accept':'application/json'},
-      body:JSON.stringify(room)
+function mqttConnect(){
+  return new Promise((resolve,reject)=>{
+    if(mqttClient){ mqttClient.end(true); mqttClient=null; }
+    const client=mqtt.connect(MQTT_BROKER,{
+      clientId:'jinro_'+genId(),
+      keepalive:30,
+      reconnectPeriod:3000,
+      connectTimeout:10000
     });
-  }catch(e){}
+    let resolved=false;
+    client.on('connect',()=>{
+      client.subscribe(mqttTopic(),{qos:1},()=>{
+        if(!resolved){ resolved=true; mqttClient=client; resolve(true); }
+      });
+    });
+    client.on('message',(topic,msg)=>{
+      try{
+        const room=JSON.parse(msg.toString());
+        cachedRoom=room;
+        if(pollHandler) pollHandler(room);
+      }catch(e){}
+    });
+    client.on('error',(err)=>{ if(!resolved){ resolved=true; reject(err); } });
+    setTimeout(()=>{ if(!resolved){ resolved=true; reject(new Error('timeout')); } },10000);
+  });
+}
+
+function mqttDisconnect(){
+  if(mqttClient){ mqttClient.end(true); mqttClient=null; }
+  cachedRoom=null; pollHandler=null;
+}
+
+async function saveRoom(room){
+  cachedRoom=room;
+  lsSave(room);
+  if(mqttClient&&mqttClient.connected){
+    mqttClient.publish(mqttTopic(),JSON.stringify(room),{qos:1,retain:true});
+  }
 }
 
 async function getRoom(){
-  if(blobId){
-    try{
-      const res=await fetch(`${BLOB_API}/${blobId}`,{
-        headers:{'Accept':'application/json'}
-      });
-      if(res.ok) return await res.json();
-    }catch(e){}
-  }
-  return lsLoad();
+  return cachedRoom||lsLoad();
 }
 
-async function createBlob(room){
-  try{
-    const res=await fetch(BLOB_API,{
-      method:'POST',
-      headers:{'Content-Type':'application/json','Accept':'application/json'},
-      body:JSON.stringify(room)
-    });
-    if(res.ok){
-      const loc=res.headers.get('Location')||'';
-      blobId=loc.split('/').pop()||null;
-      if(blobId){ room._blobId=blobId; lsSave(room); return true; }
-    }
-  }catch(e){}
-  lsSave(room);
-  return false;
-}
 
 // ===== ホーム =====
 async function goCreate(){
   const name=document.getElementById('home-name').value.trim();
   if(!name){ showErr('home-error','名前を入力してください'); return; }
-  showErr('home-error','');
-  S.myName=name; S.myId=genId(); S.isHost=true;
-  const tmpCode='pending_'+genId();
-  S.roomCode=tmpCode;
-  const room={
-    host:S.myId, phase:'lobby',
-    players:[{id:S.myId,name,ready:false,vote:null,cards:[],role:null,alt:null,originalRole:null,originalAlt:null}]
-  };
-  const ok=await createBlob(room);
-  if(!ok){
-    showErr('home-error','接続エラーが発生しました。ネットワークを確認してください。');
-    return;
-  }
-  // blobIdがルームID
-  S.roomCode=blobId;
-  room.code=blobId;
+  showErr('home-error','接続中...');
+  S.myName=name; S.myId=genId(); S.roomCode=genCode(); S.isHost=true;
+  try{ await mqttConnect(); }
+  catch(e){ showErr('home-error','接続エラー。ネットワークを確認してください。'); return; }
+  const room={code:S.roomCode,host:S.myId,phase:'lobby',
+    players:[{id:S.myId,name,ready:false,vote:null,cards:[],role:null,alt:null,originalRole:null,originalAlt:null}]};
   await saveRoom(room);
+  showErr('home-error','');
   showLobby(room);
   startPoll('lobby');
 }
 
 async function goJoin(){
   const name=document.getElementById('home-name').value.trim();
-  const code=document.getElementById('home-room').value.trim().replace(/\s/g,'');
+  const code=document.getElementById('home-room').value.trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
   if(!name){ showErr('home-error','名前を入力してください'); return; }
-  if(!code){ showErr('home-error','ルームIDを入力してください'); return; }
-  S.myName=name; S.myId=genId(); S.isHost=false;
-  blobId=code; S.roomCode=code;
+  if(code.length<4){ showErr('home-error','ルームコードを入力してください'); return; }
+  showErr('home-error','接続中...');
+  S.myName=name; S.myId=genId(); S.roomCode=code; S.isHost=false;
+  try{ await mqttConnect(); }
+  catch(e){ showErr('home-error','接続エラー。ネットワークを確認してください。'); return; }
+  // retainedメッセージの受信を少し待つ
+  await new Promise(r=>setTimeout(r,2000));
   const room=await getRoom();
-  if(!room){ showErr('home-error','ルームが見つかりません。ルームIDを確認してください'); return; }
-  if(room.phase!=='lobby'){ showErr('home-error','ゲームはすでに開始されています'); return; }
-  if(room.players.length>=8){ showErr('home-error','満員です（最大8人）'); return; }
+  if(!room){ showErr('home-error','ルームが見つかりません。コードを確認してください'); mqttDisconnect(); return; }
+  if(room.phase!=='lobby'){ showErr('home-error','ゲームはすでに開始されています'); mqttDisconnect(); return; }
+  if(room.players.length>=8){ showErr('home-error','満員です（最大8人）'); mqttDisconnect(); return; }
   room.players.push({id:S.myId,name,ready:false,vote:null,cards:[],role:null,alt:null,originalRole:null,originalAlt:null});
   await saveRoom(room);
+  showErr('home-error','');
   showLobby(room);
   startPoll('lobby');
 }
@@ -721,12 +725,9 @@ function rcChange(key,delta){
 
 function showLobby(room){
   show('lobby');
-  // ルームID = blobId（数字列）
-  const codeEl=document.getElementById('lobby-code');
-  codeEl.textContent=S.roomCode;
-  codeEl.style.fontSize=S.roomCode.length>10?'18px':'36px';
+  document.getElementById('lobby-code').textContent=S.roomCode;
   document.getElementById('lobby-subtitle').textContent=S.isHost
-    ?'あなたはホストです。招待URLを友人に共有してください。'
+    ?'あなたはホストです。ルームコードを友人に共有してください。'
     :'ホストがゲームを開始するのを待っています。';
   document.getElementById('lobby-host-controls').style.display=S.isHost?'block':'none';
   document.getElementById('lobby-waiting').style.display=S.isHost?'none':'block';
@@ -1068,72 +1069,71 @@ async function castVote(pid){
   }
 }
 
-// ===== ポーリング =====
-function stopPoll(){ if(S.pollInterval){clearInterval(S.pollInterval);S.pollInterval=null;} }
+// ===== ポーリング（MQTTメッセージで即時反応、バックアップ用定期チェック付き） =====
+function stopPoll(){
+  if(S.pollInterval){clearInterval(S.pollInterval);S.pollInterval=null;}
+  pollHandler=null;
+}
+
+async function processPoll(phase,room){
+  if(!room)return;
+  if(phase==='lobby'){
+    renderLobbyPlayers(room);
+    if(room.phase==='prep'){ stopPoll(); enterPrep(room); }
+  } else if(phase==='prep'){
+    if(room.phase==='morning'){ stopPoll(); enterMorning(room); return; }
+    const allReady=room.players.every(p=>p.ready);
+    if(allReady&&room.phase==='prep'&&S.isHost){
+      room.phase='morning'; await saveRoom(room); stopPoll(); enterMorning(room);
+    }
+  } else if(phase==='morning'){
+    if(room.phase==='day'){ stopPoll(); enterDay(room); return; }
+    if(S.isHost){
+      const needConfirm=room.players.filter(p=>p.role==='seer'||p.role==='wolf');
+      const allDone=needConfirm.length===0||needConfirm.every(p=>room.morningConfirmed?.[p.id]);
+      if(allDone){ room.phase='day'; await saveRoom(room); stopPoll(); enterDay(room); }
+    }
+  } else if(phase==='day'){
+    if(room.phase==='evening'){ stopPoll(); enterEvening(room); }
+  } else if(phase==='evening'){
+    if(room.phase==='night'){ stopPoll(); enterNight(room); return; }
+    if(S.isHost){
+      const hasPolice=room.players.some(p=>p.role==='police');
+      const hasDJ=room.players.some(p=>p.role==='dj');
+      const policeDone=!hasPolice||room.eveningDone?.police;
+      const djDone=!hasDJ||room.eveningDone?.dj;
+      if(policeDone&&djDone){
+        room.phase='night'; room.players.forEach(p=>p.vote=null);
+        await saveRoom(room); stopPoll(); enterNight(room);
+      }
+    }
+  } else if(phase==='night'){
+    const votes=room.players.filter(p=>p.vote);
+    const total=room.players.length;
+    const prog=document.getElementById('night-vote-progress');
+    if(prog) prog.textContent=`${votes.length}/${total}人投票済み`;
+    if(votes.length===total){
+      stopPoll();
+      if(S.isHost) await resolveGame(room);
+      else {
+        pollHandler=async(r2)=>{
+          if(r2&&r2.phase==='result'){ pollHandler=null; showResult(r2); }
+          if(r2&&r2.phase==='prep'){ pollHandler=null; enterPrep(r2); }
+        };
+      }
+    }
+  }
+}
 
 function startPoll(phase){
   stopPoll();
+  // MQTTメッセージ到着時に即時処理
+  pollHandler=async(room)=>{ await processPoll(phase,room); };
+  // バックアップ用定期チェック（5秒間隔）
   S.pollInterval=setInterval(async()=>{
     const room=await getRoom();
-    if(!room)return;
-    if(phase==='lobby'){
-      renderLobbyPlayers(room); // renderLobbyPlayersの中でrenderRoleConfigも呼ばれる
-      if(room.phase==='prep'){ stopPoll(); enterPrep(room); }
-    } else if(phase==='prep'){
-      if(room.phase==='morning'){ stopPoll(); enterMorning(room); return; }
-      const allReady=room.players.every(p=>p.ready);
-      if(allReady&&room.phase==='prep'&&S.isHost){
-        room.phase='morning';
-        await saveRoom(room);
-        stopPoll();
-        enterMorning(room);
-      }
-    } else if(phase==='morning'){
-      if(room.phase==='day'){ stopPoll(); enterDay(room); return; }
-      if(S.isHost){
-        const needConfirm=room.players.filter(p=>p.role==='seer'||p.role==='wolf');
-        const allDone=needConfirm.length===0||needConfirm.every(p=>room.morningConfirmed?.[p.id]);
-        if(allDone){
-          room.phase='day';
-          await saveRoom(room);
-          stopPoll();
-          enterDay(room);
-        }
-      }
-    } else if(phase==='day'){
-      if(room.phase==='evening'){ stopPoll(); enterEvening(room); }
-    } else if(phase==='evening'){
-      if(room.phase==='night'){ stopPoll(); enterNight(room); return; }
-      if(S.isHost){
-        const hasPolice=room.players.some(p=>p.role==='police');
-        const hasDJ=room.players.some(p=>p.role==='dj');
-        const policeDone=!hasPolice||room.eveningDone?.police;
-        const djDone=!hasDJ||room.eveningDone?.dj;
-        if(policeDone&&djDone){
-          room.phase='night';
-          room.players.forEach(p=>p.vote=null);
-          await saveRoom(room);
-          stopPoll();
-          enterNight(room);
-        }
-      }
-    } else if(phase==='night'){
-      const votes=room.players.filter(p=>p.vote);
-      const total=room.players.length;
-      document.getElementById('night-vote-progress').textContent=`${votes.length}/${total}人投票済み`;
-      if(votes.length===total){
-        stopPoll();
-        if(S.isHost) await resolveGame(room);
-        else {
-          S.pollInterval=setInterval(async()=>{
-            const r2=await getRoom();
-            if(r2&&r2.phase==='result'){ stopPoll(); showResult(r2); }
-            if(r2&&r2.phase==='prep'){ stopPoll(); enterPrep(r2); }
-          },2000);
-        }
-      }
-    }
-  },2500);
+    await processPoll(phase,room);
+  },5000);
 }
 
 // ===== 結果判定 =====
@@ -1189,12 +1189,15 @@ function showResult(room){
   // 再戦ボタン
   document.getElementById('result-rematch').style.display=S.isHost?'block':'none';
   document.getElementById('result-rematch-waiting').style.display=S.isHost?'none':'block';
-  // 非ホストは再戦開始を待つポーリング
+  // 非ホストは再戦開始をMQTTで待つ
   if(!S.isHost){
+    pollHandler=async(r)=>{
+      if(r&&r.phase==='prep'){ pollHandler=null; enterPrep(r); }
+    };
     S.pollInterval=setInterval(async()=>{
       const r=await getRoom();
       if(r&&r.phase==='prep'){ stopPoll(); enterPrep(r); }
-    },2500);
+    },5000);
   }
 }
 
@@ -1222,7 +1225,7 @@ async function rematch(){
 
 function backToHome(){
   stopPoll();
-  blobId=null;
+  mqttDisconnect();
   S={myName:'',myId:'',roomCode:'',isHost:false,myRole:'',myAlt:'',myCards:[],
      seerResult:null,policeResult:null,djDone:false,myVote:'',pollInterval:null,seerUsed:false,
      seerTarget:null,policeTarget:null,wolfCompanions:[]};
@@ -1234,9 +1237,8 @@ function backToHome(){
 }
 // ===== URLからルームコードを取得（共有リンク対応） =====
 window.addEventListener('load',()=>{
-  // URLハッシュにblobId（ルームID）が含まれている場合、自動入力
-  const hash=location.hash.replace('#','');
-  if(hash.length>4){
+  const hash=location.hash.replace('#','').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(hash.length>=4){
     document.getElementById('home-room').value=hash;
     setTimeout(()=>document.getElementById('home-name').focus(),150);
   }
