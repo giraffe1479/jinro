@@ -88,6 +88,7 @@ input::placeholder{color:#b4b2a9}
 .citizen-win{background:linear-gradient(135deg,#e1f5ee,#9fe1cb)}
 .wolf-win{background:linear-gradient(135deg,#fcebeb,#f0997b)}
 .ghost-win{background:linear-gradient(135deg,#f1efe8,#d3d1c7)}
+.peace-win{background:linear-gradient(135deg,#e6f1fb,#9fe1cb)}
 .win-icon{font-size:48px;margin-bottom:0.5rem}
 .win-text{font-size:22px;font-weight:700;margin-bottom:0.4rem}
 .win-sub{font-size:14px;opacity:0.75}
@@ -372,6 +373,13 @@ input::placeholder{color:#b4b2a9}
   <div class="card">
     <div class="card-title">プレイヤーボード（投票） <span id="night-vote-progress" style="font-weight:400;color:#888780"></span></div>
     <div id="night-players"></div>
+    <!-- 平和村投票 -->
+    <div id="night-peace-section" style="margin-top:12px;padding-top:12px;border-top:1px solid #f1efe8">
+      <button id="night-peace-btn" class="btn" style="border-color:#9fe1cb;color:#0f6e56;text-align:center" onclick="castVote('__peace__')">
+        🕊️ 平和村に投票する（誰も吊らない）
+      </button>
+      <div id="night-peace-voted" class="ability-done" style="display:none;color:#0f6e56">🕊️ 平和村に投票しました</div>
+    </div>
     <div id="night-voted-msg" style="display:none;font-size:13px;color:#888780;margin-top:0.75rem;padding:8px;background:#f5f4f0;border-radius:8px;text-align:center">
       投票しました。他のプレイヤーを待っています<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
     </div>
@@ -1074,6 +1082,11 @@ async function enterNight(room){
     nightInfoCard.style.display=infoHtml?'block':'none';
     if(infoHtml) document.getElementById('night-info-content').innerHTML=infoHtml;
   }
+  // 平和村ボタンをリセット
+  const peaceBtn=document.getElementById('night-peace-btn');
+  const peaceVoted=document.getElementById('night-peace-voted');
+  if(peaceBtn) peaceBtn.style.display='';
+  if(peaceVoted) peaceVoted.style.display='none';
   document.getElementById('night-players').innerHTML=renderPlayerBoard(r,{voting:true,nightDisplay:true});
   startPoll('night');
 }
@@ -1086,22 +1099,33 @@ async function castVote(pid){
   if(!me)return;
   me.vote=pid;
   await saveRoom(room);
-  document.getElementById('night-voted-msg').style.display='block';
-  // 全行クリック無効化・フェードアウト
+
+  // 全プレイヤー行・平和村ボタンを無効化
   document.querySelectorAll('.pb-vote').forEach(row=>{
     row.style.opacity='0.4';
     row.style.pointerEvents='none';
     row.onclick=null;
   });
   document.querySelectorAll('[id^="vlabel-"]').forEach(el=>el.style.display='none');
-  // 投票先をハイライト
-  const votedRow=document.getElementById('pcrow-'+pid);
-  if(votedRow){
-    votedRow.style.opacity='1';
-    votedRow.classList.add('pb-picked');
-    const lbl=document.getElementById('vlabel-'+pid);
-    if(lbl){lbl.textContent='✓ 投票済み';lbl.style.display='';lbl.style.color='#3c3489';lbl.style.fontWeight='600';}
+  const peaceBtn=document.getElementById('night-peace-btn');
+  const peaceVoted=document.getElementById('night-peace-voted');
+  if(peaceBtn) peaceBtn.style.display='none';
+
+  if(pid==='__peace__'){
+    // 平和村に投票
+    if(peaceVoted) peaceVoted.style.display='flex';
+  } else {
+    // プレイヤーに投票：対象をハイライト
+    if(peaceVoted) peaceVoted.style.display='none';
+    const votedRow=document.getElementById('pcrow-'+pid);
+    if(votedRow){
+      votedRow.style.opacity='1';
+      votedRow.classList.add('pb-picked');
+      const lbl=document.getElementById('vlabel-'+pid);
+      if(lbl){lbl.textContent='✓ 投票済み';lbl.style.display='';lbl.style.color='#3c3489';lbl.style.fontWeight='600';}
+    }
   }
+  document.getElementById('night-voted-msg').style.display='block';
 }
 
 // ===== ポーリング（MQTTメッセージで即時反応、バックアップ用定期チェック付き） =====
@@ -1173,19 +1197,38 @@ function startPoll(phase){
 
 // ===== 結果判定 =====
 async function resolveGame(room){
-  const counts={};
-  room.players.forEach(p=>{ if(p.vote) counts[p.vote]=(counts[p.vote]||0)+1; });
-  const maxVotes=Math.max(...Object.values(counts));
-  const hangedIds=Object.entries(counts).filter(([,v])=>v===maxVotes).map(([id])=>id);
-  const hangedPlayers=room.players.filter(p=>hangedIds.includes(p.id));
-  const hangedRoles=hangedPlayers.map(p=>p.role);
-  let winner,icon,desc;
-  if(hangedRoles.includes('ghost')&&!hangedRoles.includes('wolf')){
-    winner='ghost'; icon='👻'; desc='おばけが吊られました！おばけの勝利！';
-  } else if(hangedRoles.includes('wolf')){
-    winner='citizen'; icon='🏘️'; desc='人狼が吊られました！市民サイドの勝利！';
+  const allVotes=room.players.filter(p=>p.vote);
+  const peaceVotes=allVotes.filter(p=>p.vote==='__peace__');
+  const playerVotes=allVotes.filter(p=>p.vote!=='__peace__');
+  let winner,icon,desc,hangedIds=[];
+
+  if(peaceVotes.length===allVotes.length&&allVotes.length>0){
+    // 全員が平和村に投票
+    const hasWolf=room.players.some(p=>p.role==='wolf');
+    if(!hasWolf){
+      winner='peace'; icon='🕊️'; desc='全員が平和村に投票し、人狼もいませんでした！全員の勝利！';
+    } else {
+      winner='wolf'; icon='🐺'; desc='全員が平和村に投票しましたが、人狼が潜んでいました！人狼サイドの勝利！';
+    }
   } else {
-    winner='wolf'; icon='🐺'; desc='人狼は吊られませんでした。人狼サイドの勝利！';
+    // 平和村を除いたプレイヤー票のみで判定
+    const counts={};
+    playerVotes.forEach(p=>{ counts[p.vote]=(counts[p.vote]||0)+1; });
+    if(Object.keys(counts).length===0){
+      winner='wolf'; icon='🐺'; desc='誰も吊られませんでした。人狼サイドの勝利！';
+    } else {
+      const maxVotes=Math.max(...Object.values(counts));
+      hangedIds=Object.entries(counts).filter(([,v])=>v===maxVotes).map(([id])=>id);
+      const hangedPlayers=room.players.filter(p=>hangedIds.includes(p.id));
+      const hangedRoles=hangedPlayers.map(p=>p.role);
+      if(hangedRoles.includes('ghost')&&!hangedRoles.includes('wolf')){
+        winner='ghost'; icon='👻'; desc='おばけが吊られました！おばけの勝利！';
+      } else if(hangedRoles.includes('wolf')){
+        winner='citizen'; icon='🏘️'; desc='人狼が吊られました！市民サイドの勝利！';
+      } else {
+        winner='wolf'; icon='🐺'; desc='人狼は吊られませんでした。人狼サイドの勝利！';
+      }
+    }
   }
   room.phase='result';
   room.winner=winner; room.winIcon=icon; room.winDesc=desc; room.hanged=hangedIds;
@@ -1195,8 +1238,8 @@ async function resolveGame(room){
 
 function showResult(room){
   show('result');
-  const colors={citizen:'citizen-win',wolf:'wolf-win',ghost:'ghost-win'};
-  const titles={citizen:'市民サイド勝利！',wolf:'人狼サイド勝利！',ghost:'おばけ勝利！'};
+  const colors={citizen:'citizen-win',wolf:'wolf-win',ghost:'ghost-win',peace:'peace-win'};
+  const titles={citizen:'市民サイド勝利！',wolf:'人狼サイド勝利！',ghost:'おばけ勝利！',peace:'🕊️ 全員勝利！'};
   document.getElementById('result-banner').className='winner-banner '+(colors[room.winner]||'');
   document.getElementById('result-icon').textContent=room.winIcon||'🎭';
   document.getElementById('result-title').textContent=titles[room.winner]||'ゲーム終了';
